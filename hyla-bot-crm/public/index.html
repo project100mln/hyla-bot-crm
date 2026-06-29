@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hyla — Воронка продаж</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="drop">💧</span>
+      <div>
+        <h1>Hyla — Воронка продаж</h1>
+        <p>Лиды от первого контакта до закрытой сделки</p>
+      </div>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <input id="search" type="text" placeholder="Поиск по имени, телефону, городу" />
+      <button id="addLeadBtn">+ Новый лид</button>
+    </div>
+    <div id="board" class="board"></div>
+  </main>
+
+  <div id="modalRoot"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "hyla-bot-crm",
+  "version": "1.0.0",
+  "description": "Telegram-бот для лидов + CRM воронка продаж Hyla, всё в одном проекте",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
