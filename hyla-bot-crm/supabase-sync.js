@@ -45,11 +45,11 @@ function mapToHylaLeads(lead) {
 
 async function syncLeadToHylaLeads(lead) {
   const url = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const sharedSecret = process.env.HYLA_BOT_SHARED_SECRET;
 
-  if (!url || !serviceKey) {
+  if (!url || !sharedSecret) {
     console.warn(
-      "[supabase-sync] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY не заданы — " +
+      "[supabase-sync] SUPABASE_URL / HYLA_BOT_SHARED_SECRET не заданы — " +
         "лид сохранён только в Railway-базе, в PURE-HOME OS он не появится."
     );
     return;
@@ -58,13 +58,11 @@ async function syncLeadToHylaLeads(lead) {
   const payload = mapToHylaLeads(lead);
 
   try {
-    const res = await fetch(`${url}/rest/v1/hyla_leads`, {
+    const res = await fetch(`${url}/functions/v1/hyla-bot-intake`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        Prefer: "return=minimal",
+        "x-hyla-bot-secret": sharedSecret,
       },
       body: JSON.stringify(payload),
     });
