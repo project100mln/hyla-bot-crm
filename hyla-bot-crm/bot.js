@@ -1,5 +1,6 @@
 const TelegramBot = require("node-telegram-bot-api");
 const { pool } = require("./db");
+const { syncLeadToHylaLeads } = require("./supabase-sync");
 
 const sessions = new Map();
 
@@ -285,6 +286,11 @@ function startBot() {
       );
       return;
     }
+
+    // Дублируем лида в CRM PURE-HOME OS (hyla_leads в Supabase). Не ждём
+    // результата и не даём этой синхронизации задержать ответ пользователю —
+    // syncLeadToHylaLeads сама ловит и логирует любые свои ошибки.
+    syncLeadToHylaLeads(lead);
 
     sessions.delete(chatId);
 
