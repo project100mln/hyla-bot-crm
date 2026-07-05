@@ -1,6 +1,6 @@
 const TelegramBot = require("node-telegram-bot-api");
 const { pool } = require("./db");
-const { syncLeadToHylaLeads } = require("./supabase-sync");
+const { syncLeadToHylaLeads, updateHylaLeadStatus } = require("./supabase-sync");
 
 const sessions = new Map();
 
@@ -287,10 +287,10 @@ function startBot() {
       return;
     }
 
-    // Дублируем лида в CRM PURE-HOME OS (hyla_leads в Supabase). Не ждём
-    // результата и не даём этой синхронизации задержать ответ пользователю —
-    // syncLeadToHylaLeads сама ловит и логирует любые свои ошибки.
-    syncLeadToHylaLeads(lead);
+    // Дублируем лида в CRM PURE-HOME OS (hyla_leads в Supabase). Ждём id
+    // созданной записи, чтобы прикрепить к уведомлению владельцу кнопки
+    // быстрой смены статуса.
+    const hylaLeadId = await syncLeadToHylaLeads(lead);
 
     sessions.delete(chatId);
 
@@ -304,6 +304,25 @@ function startBot() {
     );
 
     if (ownerChatId) {
+      // Кнопки работают, только если лид реально попал в hyla_leads (иначе
+      // менять там нечего). Если синхронизация не удалась — владелец всё
+      // равно получит уведомление, просто без кнопок быстрой смены статуса.
+      const statusButtons = hylaLeadId
+        ? {
+            inline_keyboard: [
+              [
+                { text: "✅ Связался", callback_data: `st:${hylaLeadId}:operator_contacted` },
+                { text: "📅 Демо назначено", callback_data: `st:${hylaLeadId}:demo_scheduled` },
+              ],
+              [
+                { text: "🔁 Перезвонить", callback_data: `st:${hylaLeadId}:callback` },
+                { text: "💰 Продажа", callback_data: `st:${hylaLeadId}:sale` },
+              ],
+              [{ text: "❌ Отказ", callback_data: `st:${hylaLeadId}:refused` }],
+            ],
+          }
+        : undefined;
+
       await bot
         .sendMessage(
           ownerChatId,
@@ -315,13 +334,56 @@ function startBot() {
             `Зона: ${lead.zone}\n` +
             `Желаемый результат: ${lead.desiredResult}\n` +
             `Источник: ${lead.source}\n` +
-            (lead.username ? `Telegram: @${lead.username}` : "")
+            (lead.username ? `Telegram: @${lead.username}` : ""),
+          statusButtons ? { reply_markup: statusButtons } : undefined
         )
         .catch((error) =>
           console.error("[bot] ошибка уведомления владельца:", error.message)
         );
     }
   }
+
+  // Обработка нажатий на кнопки статуса под карточкой лида — меняет статус
+  // в hyla_leads (PURE-HOME OS) прямо из Telegram, без захода в CRM.
+  const STATUS_BUTTON_LABELS = {
+    operator_contacted: "Оператор связался",
+    demo_scheduled: "Демо назначено",
+    callback: "Перезвонить",
+    sale: "Продажа",
+    refused: "Отказ",
+  };
+
+  bot.on("callback_query", async (query) => {
+    const data = query.data || "";
+    if (!data.startsWith("st:")) return;
+
+    const [, leadId, status] = data.split(":");
+    if (!leadId || !status) {
+      return bot.answerCallbackQuery(query.id, { text: "Некорректные данные кнопки" });
+    }
+
+    const ok = await updateHylaLeadStatus(leadId, status);
+    const label = STATUS_BUTTON_LABELS[status] || status;
+
+    if (!ok) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "Не удалось обновить статус. Попробуйте ещё раз.",
+        show_alert: true,
+      });
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: `Статус обновлён: ${label}` });
+
+    try {
+      const originalText = query.message.text || "";
+      await bot.editMessageText(`${originalText}\n\n➡️ Статус: ${label}`, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+      });
+    } catch (error) {
+      console.error("[bot] не удалось обновить текст сообщения:", error.message);
+    }
+  });
 
   bot.on("message", async (msg) => {
     if (msg.text && msg.text.startsWith("/")) return;
