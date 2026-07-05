@@ -52,7 +52,7 @@ async function syncLeadToHylaLeads(lead) {
       "[supabase-sync] SUPABASE_URL / HYLA_BOT_SHARED_SECRET не заданы — " +
         "лид сохранён только в Railway-базе, в PURE-HOME OS он не появится."
     );
-    return;
+    return null;
   }
 
   const payload = mapToHylaLeads(lead);
@@ -67,20 +67,68 @@ async function syncLeadToHylaLeads(lead) {
       body: JSON.stringify(payload),
     });
 
+    const body = await res.json().catch(() => null);
+
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
       console.error(
-        `[supabase-sync] Не удалось сохранить лида в PURE-HOME OS (${res.status}): ${text}`
+        `[supabase-sync] Не удалось сохранить лида в PURE-HOME OS (${res.status}):`,
+        body
       );
-    } else {
-      console.log("[supabase-sync] Лид продублирован в PURE-HOME OS (hyla_leads)");
+      return null;
     }
+
+    console.log("[supabase-sync] Лид продублирован в PURE-HOME OS (hyla_leads)");
+    return body && body.id ? body.id : null;
   } catch (error) {
     console.error(
       "[supabase-sync] Ошибка сети при синхронизации с PURE-HOME OS:",
       error.message
     );
+    return null;
   }
 }
 
-module.exports = { syncLeadToHylaLeads };
+// Меняет статус лида в hyla_leads прямо из Telegram (кнопки под карточкой),
+// без захода в CRM. leadId — это id строки в hyla_leads, полученный из
+// syncLeadToHylaLeads при создании лида.
+async function updateHylaLeadStatus(leadId, status) {
+  const url = process.env.SUPABASE_URL;
+  const sharedSecret = process.env.HYLA_BOT_SHARED_SECRET;
+
+  if (!url || !sharedSecret || !leadId) {
+    console.warn(
+      "[supabase-sync] Не могу обновить статус — нет SUPABASE_URL/секрета/leadId."
+    );
+    return false;
+  }
+
+  try {
+    const res = await fetch(`${url}/functions/v1/hyla-bot-update-status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-hyla-bot-secret": sharedSecret,
+      },
+      body: JSON.stringify({ lead_id: leadId, status }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error(
+        `[supabase-sync] Не удалось обновить статус лида (${res.status}): ${text}`
+      );
+      return false;
+    }
+
+    console.log(`[supabase-sync] Статус лида ${leadId} обновлён на "${status}"`);
+    return true;
+  } catch (error) {
+    console.error(
+      "[supabase-sync] Ошибка сети при обновлении статуса:",
+      error.message
+    );
+    return false;
+  }
+}
+
+module.exports = { syncLeadToHylaLeads, updateHylaLeadStatus };
