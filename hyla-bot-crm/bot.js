@@ -98,6 +98,13 @@ function startBot() {
   bot.on("callback_query", async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
+
+    // Кнопки карточки лида (статус/дата/завершение демо) обрабатываются
+    // отдельным обработчиком ниже — этот блок только про квиз для клиента.
+    if (data.startsWith("st:") || data.startsWith("dt:") || data.startsWith("dd:")) {
+      return;
+    }
+
     const session = sessions.get(chatId);
 
     await closeOldButtons(bot, query);
@@ -343,23 +350,99 @@ function startBot() {
     }
   }
 
-  // Обработка нажатий на кнопки статуса под карточкой лида — меняет статус
-  // в hyla_leads (PURE-HOME OS) прямо из Telegram, без захода в CRM.
+  // Обработка карточки лида в Telegram — весь цикл от первого контакта до
+  // финального исхода (продажа/отказ), включая демонстрацию, без захода в
+  // CRM. Три типа кнопок:
+  //   st:<leadId>:<status>  — установить статус (или открыть выбор даты
+  //                           для callback/thinking)
+  //   dt:<leadId>:<status>:<preset> — дата следующего контакта выбрана
+  //   dd:<leadId>           — демонстрация завершена
   const STATUS_BUTTON_LABELS = {
     operator_contacted: "Оператор связался",
     demo_scheduled: "Демо назначено",
+    demo_done: "Демо завершено",
     callback: "Перезвонить",
+    thinking: "Клиент думает",
     sale: "Продажа",
     refused: "Отказ",
   };
 
-  bot.on("callback_query", async (query) => {
-    const data = query.data || "";
-    if (!data.startsWith("st:")) return;
+  const DATE_PRESET_LABELS = {
+    "2h": "через 2 часа",
+    tomorrow: "завтра",
+    "3d": "через 3 дня",
+    manual: "дата будет указана в CRM",
+  };
 
-    const [, leadId, status] = data.split(":");
+  function buildDatePickerKeyboard(leadId, status) {
+    return {
+      inline_keyboard: [
+        [
+          { text: "⏱ Через 2 часа", callback_data: `dt:${leadId}:${status}:2h` },
+          { text: "📆 Завтра", callback_data: `dt:${leadId}:${status}:tomorrow` },
+        ],
+        [
+          { text: "🗓 Через 3 дня", callback_data: `dt:${leadId}:${status}:3d` },
+          { text: "✍️ Укажу в CRM", callback_data: `dt:${leadId}:${status}:manual` },
+        ],
+      ],
+    };
+  }
+
+  // "manual" намеренно возвращает null — дату в этом случае оператор
+  // указывает вручную в CRM, бот её не придумывает.
+  function computeNextContactAt(preset) {
+    const now = new Date();
+
+    if (preset === "2h") {
+      return new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+    }
+
+    if (preset === "tomorrow") {
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(10, 0, 0, 0);
+      return tomorrow.toISOString();
+    }
+
+    if (preset === "3d") {
+      const in3Days = new Date(now);
+      in3Days.setDate(in3Days.getDate() + 3);
+      return in3Days.toISOString();
+    }
+
+    return null;
+  }
+
+  async function editStatusMessage(query, extraText, replyMarkup) {
+    const originalText = query.message.text || "";
+    try {
+      await bot.editMessageText(`${originalText}\n\n${extraText}`, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        reply_markup: replyMarkup,
+      });
+    } catch (error) {
+      console.error("[bot] не удалось обновить сообщение:", error.message);
+    }
+  }
+
+  async function handleLeadStatusButton(query) {
+    const [, leadId, status] = query.data.split(":");
     if (!leadId || !status) {
       return bot.answerCallbackQuery(query.id, { text: "Некорректные данные кнопки" });
+    }
+
+    // "Перезвонить" и "Клиент думает" сначала спрашивают дату следующего
+    // контакта — статус в базе фиксируется только после выбора даты (dt:).
+    if (status === "callback" || status === "thinking") {
+      await bot.answerCallbackQuery(query.id).catch(() => {});
+      const label = STATUS_BUTTON_LABELS[status] || status;
+      return editStatusMessage(
+        query,
+        `📅 ${label} — когда напомнить об этом лиде?`,
+        buildDatePickerKeyboard(leadId, status)
+      );
     }
 
     const ok = await updateHylaLeadStatus(leadId, status);
@@ -372,17 +455,94 @@ function startBot() {
       });
     }
 
-    await bot.answerCallbackQuery(query.id, { text: `Статус обновлён: ${label}` });
+    await bot.answerCallbackQuery(query.id, { text: `Статус обновлён: ${label}` }).catch(() => {});
 
-    try {
-      const originalText = query.message.text || "";
-      await bot.editMessageText(`${originalText}\n\n➡️ Статус: ${label}`, {
-        chat_id: query.message.chat.id,
-        message_id: query.message.message_id,
+    if (status === "operator_contacted") {
+      return editStatusMessage(query, `➡️ Статус: ${label}`, {
+        inline_keyboard: [
+          [
+            { text: "📅 Демо назначено", callback_data: `st:${leadId}:demo_scheduled` },
+            { text: "🔁 Перезвонить", callback_data: `st:${leadId}:callback` },
+          ],
+          [{ text: "❌ Отказ", callback_data: `st:${leadId}:refused` }],
+        ],
       });
-    } catch (error) {
-      console.error("[bot] не удалось обновить текст сообщения:", error.message);
     }
+
+    if (status === "demo_scheduled") {
+      return editStatusMessage(query, `➡️ Статус: ${label}`, {
+        inline_keyboard: [[{ text: "✅ Завершить демо", callback_data: `dd:${leadId}` }]],
+      });
+    }
+
+    // sale, refused — конечные статусы, дальше кнопки не нужны.
+    return editStatusMessage(query, `➡️ Статус: ${label}`, { inline_keyboard: [] });
+  }
+
+  async function handleDemoDone(query) {
+    const [, leadId] = query.data.split(":");
+    if (!leadId) {
+      return bot.answerCallbackQuery(query.id, { text: "Некорректные данные кнопки" });
+    }
+
+    const ok = await updateHylaLeadStatus(leadId, "demo_done");
+
+    if (!ok) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "Не удалось обновить статус. Попробуйте ещё раз.",
+        show_alert: true,
+      });
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: "Демо завершено" }).catch(() => {});
+
+    return editStatusMessage(query, "➡️ Статус: Демо завершено", {
+      inline_keyboard: [
+        [
+          { text: "💰 Продажа", callback_data: `st:${leadId}:sale` },
+          { text: "❌ Отказ", callback_data: `st:${leadId}:refused` },
+        ],
+        [
+          { text: "🤔 Клиент думает", callback_data: `st:${leadId}:thinking` },
+          { text: "🔁 Перезвонить", callback_data: `st:${leadId}:callback` },
+        ],
+      ],
+    });
+  }
+
+  async function handleDatePick(query) {
+    const [, leadId, status, preset] = query.data.split(":");
+    if (!leadId || !status || !preset) {
+      return bot.answerCallbackQuery(query.id, { text: "Некорректные данные кнопки" });
+    }
+
+    const nextContactAt = computeNextContactAt(preset);
+    const ok = await updateHylaLeadStatus(leadId, status, nextContactAt);
+    const label = STATUS_BUTTON_LABELS[status] || status;
+
+    if (!ok) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "Не удалось обновить статус. Попробуйте ещё раз.",
+        show_alert: true,
+      });
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: `Статус обновлён: ${label}` }).catch(() => {});
+
+    const presetLabel = DATE_PRESET_LABELS[preset] || preset;
+    return editStatusMessage(
+      query,
+      `➡️ Статус: ${label}\n📅 Следующий контакт: ${presetLabel}`,
+      { inline_keyboard: [] }
+    );
+  }
+
+  bot.on("callback_query", async (query) => {
+    const data = query.data || "";
+
+    if (data.startsWith("dt:")) return handleDatePick(query);
+    if (data.startsWith("dd:")) return handleDemoDone(query);
+    if (data.startsWith("st:")) return handleLeadStatusButton(query);
   });
 
   bot.on("message", async (msg) => {

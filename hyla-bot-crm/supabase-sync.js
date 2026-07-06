@@ -90,8 +90,9 @@ async function syncLeadToHylaLeads(lead) {
 
 // Меняет статус лида в hyla_leads прямо из Telegram (кнопки под карточкой),
 // без захода в CRM. leadId — это id строки в hyla_leads, полученный из
-// syncLeadToHylaLeads при создании лида.
-async function updateHylaLeadStatus(leadId, status) {
+// syncLeadToHylaLeads при создании лида. nextContactAt (необязательно) —
+// ISO-дата следующего контакта, ставится для исходов callback/thinking.
+async function updateHylaLeadStatus(leadId, status, nextContactAt) {
   const url = process.env.SUPABASE_URL;
   const sharedSecret = process.env.HYLA_BOT_SHARED_SECRET;
 
@@ -102,6 +103,11 @@ async function updateHylaLeadStatus(leadId, status) {
     return false;
   }
 
+  const payload = { lead_id: leadId, status };
+  if (nextContactAt) {
+    payload.next_contact_at = nextContactAt;
+  }
+
   try {
     const res = await fetch(`${url}/functions/v1/hyla-bot-update-status`, {
       method: "POST",
@@ -109,7 +115,7 @@ async function updateHylaLeadStatus(leadId, status) {
         "Content-Type": "application/json",
         "x-hyla-bot-secret": sharedSecret,
       },
-      body: JSON.stringify({ lead_id: leadId, status }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
